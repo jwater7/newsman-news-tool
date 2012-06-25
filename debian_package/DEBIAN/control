@@ -1,0 +1,11 @@
+Package: newsman
+Architecture: all
+Maintainer: mail@waterbrook.net
+Depends: libnews-nntpclient-perl, libdbd-sqlite3-perl
+Priority: optional
+Description: Newsman NNTP news tool
+ Newsman is a simple NNTP perl tool that can:
+ Show a list of groups (newsgroups e.g. alt.binaries.linux) which can be filtered by a regular expression (regex)
+ Retrieve and cache headers (in batches) using XOVER minimizing it's memory footprint
+ Download articles to a specified directory
+ yEnc decode those articles if possible. 
