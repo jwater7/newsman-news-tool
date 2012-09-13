@@ -166,6 +166,18 @@ sub close_news_handles {
 
 }
 
+sub reconnect_news_handles {
+
+	close_news_handles();
+
+	my $num_handles = connect_news_handles();
+	# make sure we are configured for one or more hosts
+	if ($num_handles <= 0) {
+		lprint "Error: No hosts are configured in the database, use $baseprg -s <hoststring>";
+		exit 1;
+	}
+}
+
 sub list_config {
 
 	my $host_q_handle = $g_db_h->prepare("SELECT * FROM newsman_hosts;");
@@ -233,7 +245,18 @@ sub refresh_headers {
 			$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
 		}
 
+#TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
+		if (!$groupfirst) {
+			lprint "Trying to reconnect: $n_h->code...";
+			reconnect_news_handles();
+			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
+		}
+		if (!$groupfirst) {
+			lprint "ERROR: Could not get first and last header numbers for group $g_opt{g}, probably server timeout.  Will not refresh and get from cache.";
+			return;
+		}
+
 		lprint "$g_opt{g} has headers $groupfirst to $grouplast (" . ($grouplast - $groupfirst) . ")";
 		#TODO retire old
 
@@ -289,14 +312,31 @@ sub refresh_headers {
 			
 				my $perc = int((($set) / $max_set) * 100);
 				lprint "Caching headers $setfirst to $setlast... $perc% (" . ($set + 1) . "/" . $max_set . ")";
+#TODO reconnect function
 				my @xoverrsp = $n_h->xover($setfirst, $setlast);
+				if (!@xoverrsp) {
+					lprint "Trying to reconnect: $n_h->code...";
+					reconnect_news_handles();
+					@xoverrsp = $n_h->xover($setfirst, $setlast);
+				}
 				if (!@xoverrsp) {
 					lprint "No response, Timed out? Try lower batch size";
 					return;
 				}
 				$g_db_h->begin_work;
 				#TODO hostname doesnt match with this method
-				my $ins_q_handle = $g_db_h->prepare("INSERT INTO newsman_headers (hostname, newsgroup, numb, subj, frm, date, mesg, refr, char, line, xref) VALUES ('" . $n_h->host() . "', '$g_opt{g}', ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+#TODO reconnect function
+				my $nhost = $n_h->host();
+				if (!$nhost) {
+					lprint "Trying to reconnect: $n_h->code...";
+					reconnect_news_handles();
+					$nhost = $n_h->host();
+				}
+				if (!$nhost) {
+					lprint "No host call response, Timed out? Try lower batch size";
+					return;
+				}
+				my $ins_q_handle = $g_db_h->prepare("INSERT INTO newsman_headers (hostname, newsgroup, numb, subj, frm, date, mesg, refr, char, line, xref) VALUES ('" . $nhost . "', '$g_opt{g}', ?, ?, ?, ?, ?, ?, ?, ?, ?);");
 				if ($ins_q_handle) {
 					foreach my $xover (@xoverrsp) {
 						my @fields = split /\t/, $xover;
@@ -450,8 +490,17 @@ sub get_articles {
 
 	foreach my $n_h (@g_news_h) {
 
-		# set the group context for the next article calls
+#TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
+		if (!$groupfirst) {
+			lprint "Trying to reconnect: $n_h->code...";
+			reconnect_news_handles();
+			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
+		}
+		if (!$groupfirst) {
+			lprint "ERROR: Could not set group context for $g_opt{g}, probably server timeout.  Will not get articles.";
+			return;
+		}
 
 		# TODO max batch
 		my $art_q_handle = $g_db_h->prepare("SELECT numb,subj FROM newsman_headers WHERE newsgroup = '$g_opt{g}';"); #SQLITE specific command
@@ -472,7 +521,20 @@ sub get_articles {
 					if(! -e $newf || -s $newf <= 0 || defined($g_opt{p})) {
 						if(open(my $fh, '>', $newf)) {
 							lprint "Saving article $newf ($art_row->{'subj'})...";
-							print $fh $n_h->article($art_row->{'numb'});
+
+#TODO reconnect function
+							my $art_text = $n_h->article($art_row->{'numb'});
+							if (!$art_text) {
+								lprint "Trying to reconnect: $n_h->code...";
+								reconnect_news_handles();
+								$art_text = $n_h->article($art_row->{'numb'});
+							}
+							if (!$art_text) {
+								lprint "ERROR: Could not get article $art_row->{'numb'}, probably server timeout.  Stopped getting articles.";
+								return;
+							}
+							print $fh @{$art_text};
+
 							close($fh);
 						}
 					}
