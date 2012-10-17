@@ -55,9 +55,11 @@ sub usage {
 	print "Article/header options:\n";
 	print "-b <num>		: retrieve in size <num> batches (for -g and -a), default: 100000\n";
 	print "-d <dir>		: save the articles to <dir> (for -g)\n";
+	print "-e <num>		: just save the articles <num> (for -g)\n";
 	print "-n <num>		: retrieve only last <num> of articles (for -g)\n";
 	print "-p		: purge db cache headers (for -g)\n";
 	print "-g <group>	: specify newsgroup (eg alt.binaries.linux)\n";
+	print "-w <num>		: rewind to get <num> more articles than we have (for -g)\n";
 	print "-x		: dont try to get new headers (for -g)\n";
 	print "-y		: try to decode yEnc articles (for -g)\n";
 	print "\n";
@@ -77,6 +79,8 @@ sub usage {
 	print "	$baseprg -n 50 -g alt.binaries.linux\n";
 	print "Example: (cache and search the cached topics in alt.binaries.linux group for the word 'pen' in the subject)\n";
 	print "	$baseprg -g alt.binaries.linux -r 'pen'\n";
+	print "Example: (just download and decode a specific article number without refreshing cache\n";
+	print "	$baseprg -d ~/Downloads -g alt.binaries.linux -x -y -e 426505643\n";
 	print "\n";
 	print "Quick start:\n";
 	print "* add a server configuration,\n";
@@ -92,7 +96,7 @@ sub usage {
 
 sub init_opt {
  
-	my $opt_string = 'hab:d:g:ln:pr:s:t:xy';
+	my $opt_string = 'hab:d:e:g:ln:pr:s:t:w:xy';
  
 	use Getopt::Std;
 	getopts( "$opt_string", \%g_opt ) or usage();
@@ -103,6 +107,7 @@ sub init_opt {
 	print "-a = $g_opt{a} (Specified get list)\n" if(defined($g_opt{a}));
 	print "-b = $g_opt{b} (Specified chuck size)\n" if(defined($g_opt{b}));
 	print "-d = $g_opt{d} (Specified dir)\n" if(defined($g_opt{d}));
+	print "-e = $g_opt{e} (Specified article num)\n" if(defined($g_opt{e}));
 	print "-g = $g_opt{g} (Specified group)\n" if(defined($g_opt{g}));
 	print "-l = $g_opt{l} (Specified list)\n" if(defined($g_opt{l}));
 	print "-n = $g_opt{n} (Specified last num)\n" if(defined($g_opt{n}));
@@ -110,6 +115,7 @@ sub init_opt {
 	print "-r = $g_opt{r} (Specified regex for matching)\n" if(defined($g_opt{r}));
 	print "-s = $g_opt{s} (Specified add serv)\n" if(defined($g_opt{s}));
 	print "-t = $g_opt{t} (Specified rm serv)\n" if(defined($g_opt{t}));
+	print "-w = $g_opt{w} (Specified rewind cache)\n" if(defined($g_opt{w}));
 	print "-x = $g_opt{x} (Specified no new headers)\n" if(defined($g_opt{x}));
 	print "-y = $g_opt{y} (Specified yEnc)\n" if(defined($g_opt{y}));
 }
@@ -127,6 +133,8 @@ sub connect_db_handle {
 	if (!$g_db_h) {
 		return 0;
 	}
+	#$g_db_h->do("VACUUM;");
+	$g_db_h->do("PRAGMA default_synchronous = OFF;");
 
 	my $found_headers = 0;
 	my $host_q_handle = $g_db_h->prepare("SELECT * FROM sqlite_master WHERE type='table' and name='newsman_headers';"); #SQLITE specific command
@@ -238,17 +246,17 @@ sub list_groups {
 
 sub refresh_headers {
 
-	foreach my $n_h (@g_news_h) {
+	if (defined($g_opt{p})) {
+		lprint "purging db cache for newsgroup $g_opt{g}";
+		$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+	}
 
-		if (defined($g_opt{p})) {
-			lprint "purging db cache for newsgroup $g_opt{g}";
-			$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
-		}
+	foreach my $n_h (@g_news_h) {
 
 #TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		if (!$groupfirst) {
-			lprint "Trying to reconnect: $n_h->code...";
+			lprint "Trying to reconnect...";
 			reconnect_news_handles();
 			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		}
@@ -270,6 +278,18 @@ sub refresh_headers {
 			if ($dofirst < $dbmax->{'max'}) {
 				$dofirst = $dbmax->{'max'} + 1;
 				lprint "DB cached to $dbmax->{'max'}.";
+			}
+		}
+
+		# get a few more that we dont have yet previous to our db start
+		if (defined($g_opt{w})) {
+			my $dbmin = $g_db_h->selectrow_hashref("SELECT MIN(numb) as min FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+			if (defined($dbmin->{'min'})) {
+				if ($dofirst > $dbmin->{'min'}) {
+					$dofirst = $dbmin->{'min'} - $g_opt{w};
+					$dolast = $dbmin->{'min'};
+					lprint "DB cache starts at $dbmin->{'min'}.";
+				}
 			}
 		}
 
@@ -315,7 +335,7 @@ sub refresh_headers {
 #TODO reconnect function
 				my @xoverrsp = $n_h->xover($setfirst, $setlast);
 				if (!@xoverrsp) {
-					lprint "Trying to reconnect: $n_h->code...";
+					lprint "Trying to reconnect...";
 					reconnect_news_handles();
 					@xoverrsp = $n_h->xover($setfirst, $setlast);
 				}
@@ -328,7 +348,7 @@ sub refresh_headers {
 #TODO reconnect function
 				my $nhost = $n_h->host();
 				if (!$nhost) {
-					lprint "Trying to reconnect: $n_h->code...";
+					lprint "Trying to reconnect...";
 					reconnect_news_handles();
 					$nhost = $n_h->host();
 				}
@@ -486,6 +506,43 @@ sub ydecode {
 	}
 }
 
+sub download_article {
+
+	my ($n_h, $numb, $subj) = @_;
+
+	if (!defined($g_opt{d})) {
+		# we are not downloading to a folder
+		return;
+	}
+
+	my $newf = $g_opt{d}. '/' . $numb . '.txt';
+
+	#if it doesnt already exist or not empty or not purging
+	if(! -e $newf || -s $newf <= 0 || defined($g_opt{p})) {
+		if(open(my $fh, '>', $newf)) {
+			lprint "Saving article $newf ($subj)...";
+
+#TODO reconnect function
+			my $art_text = $n_h->article($numb);
+			if (!$art_text) {
+				lprint "Trying to reconnect...";
+				reconnect_news_handles();
+				$art_text = $n_h->article($numb);
+			}
+			if (!$art_text) {
+				lprint "ERROR: Could not get article $numb, probably server timeout.  Stopped getting articles.";
+				return;
+			}
+			print $fh @{$art_text};
+
+			close($fh);
+		}
+	}
+	if (defined($g_opt{y})) {
+		ydecode($newf);
+	}
+}
+
 sub get_articles {
 
 	foreach my $n_h (@g_news_h) {
@@ -493,13 +550,18 @@ sub get_articles {
 #TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		if (!$groupfirst) {
-			lprint "Trying to reconnect: $n_h->code...";
+			lprint "Trying to reconnect...";
 			reconnect_news_handles();
 			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		}
 		if (!$groupfirst) {
 			lprint "ERROR: Could not set group context for $g_opt{g}, probably server timeout.  Will not get articles.";
 			return;
+		}
+
+		if (defined($g_opt{e})) {
+			download_article($n_h, $g_opt{e}, "user defined article " . $g_opt{e});
+			next;
 		}
 
 		# TODO max batch
@@ -516,31 +578,7 @@ sub get_articles {
 					lprint "$art_row->{'numb'}: $art_row->{'subj'}";
 				}
 				if (defined($g_opt{d})) {
-					my $newf = $g_opt{d}. '/' . $art_row->{'numb'} . '.txt';
-					#if it doesnt already exist or not empty or not purging
-					if(! -e $newf || -s $newf <= 0 || defined($g_opt{p})) {
-						if(open(my $fh, '>', $newf)) {
-							lprint "Saving article $newf ($art_row->{'subj'})...";
-
-#TODO reconnect function
-							my $art_text = $n_h->article($art_row->{'numb'});
-							if (!$art_text) {
-								lprint "Trying to reconnect: $n_h->code...";
-								reconnect_news_handles();
-								$art_text = $n_h->article($art_row->{'numb'});
-							}
-							if (!$art_text) {
-								lprint "ERROR: Could not get article $art_row->{'numb'}, probably server timeout.  Stopped getting articles.";
-								return;
-							}
-							print $fh @{$art_text};
-
-							close($fh);
-						}
-					}
-					if (defined($g_opt{y})) {
-						ydecode($newf);
-					}
+					download_article($n_h, $art_row->{'numb'}, $art_row->{'subj'});
 				} else {
 					#print $n_h->article($art_row->{'numb'});
 				}
