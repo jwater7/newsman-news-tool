@@ -35,6 +35,7 @@ use strict;
 # Globals
 my $g_dbfile = $ENV{'HOME'} . '/.newsmandb';
 my $g_current_db_conf_version = 1;
+my $g_max_num_to_do = 10000000;
 my $g_db_h;
 my @g_news_h = ();
 my %g_opt = ();
@@ -46,7 +47,7 @@ $baseprg =~ s{.*[/\\]}{};
 sub usage {
 
 	print "\n";
-	print "usage: $baseprg [-h] [-a] [-x] [-g <group> [-n <num>] [-p] -d <dir>] [-r <regex>] [-b <num>]...etc\n";
+	print "usage: $baseprg [-h] [-a] [-j] [-g <group> [-n <num>] [-p] -d <dir>] [-r <regex>] [-b <num>]...etc\n";
 	print "\n";
 	print "-h		: this (help) message\n";
 	print "\n";
@@ -61,8 +62,8 @@ sub usage {
 	print "-n <num>		: retrieve only last <num> of articles (for -g)\n";
 	print "-p		: purge db cache headers (for -g)\n";
 	print "-g <group>	: specify newsgroup (eg alt.binaries.linux)\n";
-	print "-w <num>		: rewind to get <num> more articles than we have (for -g)\n";
-	print "-x <date>	: expire old from <date> (for -g)\n";
+	print "-w (-n <num>)	: rewind to get -n <num> more articles than we have (for -g)\n";
+	print "-x <hours>	: expire headers from cache older than <hours> old (for -g)\n";
 	print "-y		: try to decode yEnc articles (for -g)\n";
 	print "\n";
 	print "General options:\n";
@@ -82,7 +83,7 @@ sub usage {
 	print "Example: (cache and search the cached topics in alt.binaries.linux group for the word 'pen' in the subject)\n";
 	print "	$baseprg -g alt.binaries.linux -r 'pen'\n";
 	print "Example: (just download and decode a specific article number without refreshing cache\n";
-	print "	$baseprg -d ~/Downloads -g alt.binaries.linux -x -y -e 426505643\n";
+	print "	$baseprg -d ~/Downloads -g alt.binaries.linux -j -y -e 426505643\n";
 	print "\n";
 	print "Quick start:\n";
 	print "* add a server configuration,\n";
@@ -98,14 +99,13 @@ sub usage {
 
 sub init_opt {
  
-	my $opt_string = 'hab:d:e:g:jln:pr:s:t:w:x:y';
+	my $opt_string = 'hab:d:e:g:jln:pr:s:t:wx:y';
  
 	use Getopt::Std;
 	getopts( "$opt_string", \%g_opt ) or usage();
  
 	usage() if(defined($g_opt{h}));
  
-	#print "-s = $g_opt{s} (Running in mode)\n" if(defined($g_opt{s}));
 	print "-a = $g_opt{a} (Specified get list)\n" if(defined($g_opt{a}));
 	print "-b = $g_opt{b} (Specified chuck size)\n" if(defined($g_opt{b}));
 	print "-d = $g_opt{d} (Specified dir)\n" if(defined($g_opt{d}));
@@ -121,6 +121,12 @@ sub init_opt {
 	print "-w = $g_opt{w} (Specified rewind cache)\n" if(defined($g_opt{w}));
 	print "-x = $g_opt{x} (Specified expire)\n" if(defined($g_opt{x}));
 	print "-y = $g_opt{y} (Specified yEnc)\n" if(defined($g_opt{y}));
+
+	# argument checking
+	if (defined($g_opt{w}) && !defined($g_opt{n})) {
+		print "Argument parsing error: -w requires -n, exiting.\n";
+		usage();
+	}
 }
 
 sub lprint {
@@ -149,7 +155,7 @@ sub connect_db_handle {
 	# if we didnt find the headers table create it
 	if ($found_headers <= 0) {
 		lprint "Creating headers table...";
-		$g_db_h->do("CREATE TABLE newsman_headers (hostname TEXT NOT NULL, newsgroup TEXT NOT NULL, numb INT, subj TEXT NOT NULL, frm TEXT NOT NULL, date TEXT NOT NULL, mesg TEXT NOT NULL, refr TEXT NOT NULL, char TEXT NOT NULL, line TEXT NOT NULL, xref TEXT NOT NULL);");
+		$g_db_h->do("CREATE TABLE newsman_headers (hostname TEXT NOT NULL, newsgroup TEXT NOT NULL, numb INT, subj TEXT NOT NULL, frm TEXT NOT NULL, date INT, mesg TEXT NOT NULL, refr TEXT NOT NULL, char TEXT NOT NULL, line TEXT NOT NULL, xref TEXT NOT NULL);");
 	}
 
 	my $found_hosts_conf = 0;
@@ -280,12 +286,6 @@ sub list_groups {
 
 sub refresh_headers {
 
-	if (defined($g_opt{p})) {
-		lprint "purging db cache for newsgroup $g_opt{g}";
-		$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
-		$g_db_h->do("VACUUM;");
-	}
-
 	foreach my $n_h (@g_news_h) {
 
 		# see what we already have
@@ -297,7 +297,7 @@ sub refresh_headers {
 			my $dbdatemax = $g_db_h->selectrow_hashref("SELECT datetime(date, 'unixepoch', 'localtime') as date FROM newsman_headers WHERE newsgroup = '$g_opt{g}' AND numb == $dbmax->{'max'};"); #call is probably specific to sqlite with datetime
 			my $dbdatemin = $g_db_h->selectrow_hashref("SELECT datetime(date, 'unixepoch', 'localtime') as date FROM newsman_headers WHERE newsgroup = '$g_opt{g}' AND numb == $dbmin->{'min'};");
 			if (defined($dbdatemin->{'date'}) && defined($dbdatemax->{'date'})) {
-				lprint "DB cached from $dbmin->{'min'} ($dbdatemin->{'date'}) to $dbmax->{'max'} ($dbdatemax->{'date'}): " . ($dbmax->{'max'} - $dbmin->{'min'}) . " articles.";
+				lprint "DB cached from $dbmin->{'min'} ($dbdatemin->{'date'}) to $dbmax->{'max'} ($dbdatemax->{'date'}): " . ($dbmax->{'max'} - $dbmin->{'min'} + 1) . " articles.";
 			} else {
 				lprint "DB cached from $dbmin->{'min'} to $dbmax->{'max'} (" . ($dbmax->{'max'} - $dbmin->{'min'}) . ").";
 			}
@@ -322,30 +322,48 @@ sub refresh_headers {
 		my $dofirst = $groupfirst;
 		my $dolast = $grouplast;
 
-		# only start at where we left off
-		if (defined($dbmax->{'max'})) {
-			if ($dofirst < $dbmax->{'max'}) {
-				$dofirst = $dbmax->{'max'} + 1;
-			}
-		}
-
-		# get a few more that we dont have yet previous to our db start
-		if (defined($g_opt{w})) {
-			if (defined($dbmin->{'min'})) {
-				if ($dofirst > $dbmin->{'min'}) {
-					$dofirst = $dbmin->{'min'} - $g_opt{w} + 1;
-					$dolast = $dbmin->{'min'};
-				}
-			}
-		}
-
-		# only get last num
+		# Figure out how many articles we should get (real first and last)
 		if (defined($g_opt{n})) {
-			my $newfirst = $grouplast - $g_opt{n} + 1;
-			if ($newfirst > $dofirst) {
-				$dofirst = $newfirst;
+			if (defined($g_opt{w})) {
+				# -n and -w
+				if (defined($dbmin->{'min'})) {
+					# if we have some articles only end at where we left off
+					$dofirst = $dbmin->{'min'} - $g_opt{n};
+					$dolast = $dbmin->{'min'} - 1;
+				} else {
+					# if we don't have any yet just do what no -w does
+					$dofirst = $grouplast - $g_opt{n} + 1;
+					#dolast is still grouplast
+				}
+			} else {
+				# -n and NO -w
+				$dofirst = $grouplast - $g_opt{n} + 1;
+				#dolast is still grouplast
 			}
-			lprint "Only caching last $g_opt{n} headers from $dofirst";
+			lprint "Only caching $g_opt{n} headers from $dofirst";
+		} else {
+
+			# NO -n and NO -w
+			# get latest articles since last get
+			if (defined($dbmax->{'max'})) {
+				# if we have some articles only start at where we left off
+				$dofirst = $dbmax->{'max'} + 1;
+				#dolast is still grouplast
+			}
+
+			# with no number given we need to check to make sure we dont do all of them
+			my $for_max_num_to_do = $dolast - $dofirst + 1;
+			if ($for_max_num_to_do > $g_max_num_to_do) {
+				$dofirst = $dolast - $g_max_num_to_do;
+			}
+		}
+
+		# make sure we dont request articles the server doesnt have
+		if ($dofirst < $groupfirst) {
+			$dofirst = $groupfirst;
+		}
+		if ($dolast > $grouplast) {
+			$dolast = $grouplast;
 		}
 
 		if ($dofirst <= $dolast) {
@@ -689,6 +707,23 @@ if (defined($g_opt{a})) {
 
 # if we passed in a group, grab the headers
 if (defined($g_opt{g})) {
+
+	if (defined($g_opt{p})) {
+		lprint "Purging db cache for newsgroup $g_opt{g}";
+		$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+		$g_db_h->do("VACUUM;");
+	}
+
+	if (defined($g_opt{x})) {
+		lprint "Expiring old articles from cache that are older than $g_opt{x} hours for newsgroup $g_opt{g}";
+		my $too_old = time() - (60*60*$g_opt{x}); # now - hours in sec
+		my $delrows = $g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}' AND date < $too_old;");
+		$g_db_h->do("VACUUM;");
+		if (defined($delrows) && $delrows > 0) {
+			lprint "Expired $delrows articles";
+		}
+	}
+
 	if (!defined($g_opt{j})) {
 		refresh_headers();
 	}
