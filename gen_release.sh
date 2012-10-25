@@ -1,10 +1,16 @@
 #!/bin/bash
 
-# Release Process:
-# git tag -a r0.9.2 -m "built"
-# ./gen_release.sh
-# git push --tags
-# upload files
+if [ "$1" = '-h' ]; then
+
+	echo ''
+	echo 'Release Process:'
+	echo 'git tag -a r0.9.2 -m "built"'
+	echo './gen_release.sh'
+	echo 'git push --tags'
+	echo 'then upload files to code.google.com/p/newsman-news-tool/'
+	echo ''
+	exit 2	
+fi
 
 FNR=$(git tag -l 'r*' | tail -n 1)
 FN=${FNR#r}
