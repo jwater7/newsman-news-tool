@@ -316,7 +316,6 @@ sub refresh_headers {
 		}
 
 		lprint "$g_opt{g} has headers $groupfirst to $grouplast (" . ($grouplast - $groupfirst) . ")";
-		#TODO retire old
 
 		# initial assume get all headers
 		my $dofirst = $groupfirst;
@@ -324,21 +323,20 @@ sub refresh_headers {
 
 		# Figure out how many articles we should get (real first and last)
 		if (defined($g_opt{n})) {
-			if (defined($g_opt{w})) {
-				# -n and -w
-				if (defined($dbmin->{'min'})) {
-					# if we have some articles only end at where we left off
-					$dofirst = $dbmin->{'min'} - $g_opt{n};
-					$dolast = $dbmin->{'min'} - 1;
-				} else {
-					# if we don't have any yet just do what no -w does
-					$dofirst = $grouplast - $g_opt{n} + 1;
-					#dolast is still grouplast
-				}
+			# if we passed rewind and have some already otherwise treat it as no -w
+			if (defined($g_opt{w}) && defined($dbmin->{'min'})) {
+				# -n and -w (with existing cache)
+				# if we have some articles only end at where we left off
+				$dofirst = $dbmin->{'min'} - $g_opt{n};
+				$dolast = $dbmin->{'min'} - 1;
 			} else {
-				# -n and NO -w
+				# -n and NO -w (with existing cache)
 				$dofirst = $grouplast - $g_opt{n} + 1;
 				#dolast is still grouplast
+				#make sure we dont start before what we already have
+				if (defined($dbmax->{'max'}) && $dofirst <= $dbmax->{'max'}) {
+					$dofirst = $dbmax->{'max'} + 1;
+				}
 			}
 			lprint "Only caching $g_opt{n} headers from $dofirst";
 		} else {
