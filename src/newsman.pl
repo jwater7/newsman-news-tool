@@ -3,8 +3,8 @@
 #
 # NewsMan NNTP news tool
 #
-# REQUIRES: News::NNTPClient and DBD::SQLite
-# (sudo apt-get install libnews-nntpclient-perl libdbd-sqlite3-perl)
+# REQUIRES: News::NNTPClient and DBD::SQLite DateTime::Format::Mail
+# (sudo apt-get install libnews-nntpclient-perl libdbd-sqlite3-perl libdatetime-format-mail-perl)
 # (recommended sudo apt-get install sqlite3)
 #
 # Copyright (c) 2012, mail@waterbrook.net
@@ -27,25 +27,26 @@
 
 use DBI;
 use News::NNTPClient;
+use DateTime::Format::Mail;
 
 use warnings;
 use strict;
 
 # Globals
 my $g_dbfile = $ENV{'HOME'} . '/.newsmandb';
+my $g_current_db_conf_version = 1;
 my $g_db_h;
 my @g_news_h = ();
 my %g_opt = ();
 my $baseprg = $0;
 $baseprg =~ s{.*[/\\]}{};
-#my @g_xover_fields = qw(numb subj frm date mesg refr char line xref);
 
 ######### FUNCTIONS
 
 sub usage {
 
 	print "\n";
-	print "usage: $baseprg [-h] [-a] [-x] [-g <group> [-n <num>] [-p] -d <dir>] [-r <regex>] [-b <num>]\n";
+	print "usage: $baseprg [-h] [-a] [-x] [-g <group> [-n <num>] [-p] -d <dir>] [-r <regex>] [-b <num>]...etc\n";
 	print "\n";
 	print "-h		: this (help) message\n";
 	print "\n";
@@ -55,12 +56,13 @@ sub usage {
 	print "Article/header options:\n";
 	print "-b <num>		: retrieve in size <num> batches (for -g and -a), default: 100000\n";
 	print "-d <dir>		: save the articles to <dir> (for -g)\n";
-	print "-e <num>		: just save the articles <num> (for -g)\n";
+	print "-e <num>		: only save the articles <num> (for -g)\n";
+	print "-j		: dont try to get new headers (for -g)\n";
 	print "-n <num>		: retrieve only last <num> of articles (for -g)\n";
 	print "-p		: purge db cache headers (for -g)\n";
 	print "-g <group>	: specify newsgroup (eg alt.binaries.linux)\n";
 	print "-w <num>		: rewind to get <num> more articles than we have (for -g)\n";
-	print "-x		: dont try to get new headers (for -g)\n";
+	print "-x <date>	: expire old from <date> (for -g)\n";
 	print "-y		: try to decode yEnc articles (for -g)\n";
 	print "\n";
 	print "General options:\n";
@@ -96,7 +98,7 @@ sub usage {
 
 sub init_opt {
  
-	my $opt_string = 'hab:d:e:g:ln:pr:s:t:w:xy';
+	my $opt_string = 'hab:d:e:g:jln:pr:s:t:w:x:y';
  
 	use Getopt::Std;
 	getopts( "$opt_string", \%g_opt ) or usage();
@@ -109,6 +111,7 @@ sub init_opt {
 	print "-d = $g_opt{d} (Specified dir)\n" if(defined($g_opt{d}));
 	print "-e = $g_opt{e} (Specified article num)\n" if(defined($g_opt{e}));
 	print "-g = $g_opt{g} (Specified group)\n" if(defined($g_opt{g}));
+	print "-j = $g_opt{j} (Specified no new headers)\n" if(defined($g_opt{j}));
 	print "-l = $g_opt{l} (Specified list)\n" if(defined($g_opt{l}));
 	print "-n = $g_opt{n} (Specified last num)\n" if(defined($g_opt{n}));
 	print "-p = $g_opt{p} (Specified purge)\n" if(defined($g_opt{p}));
@@ -116,7 +119,7 @@ sub init_opt {
 	print "-s = $g_opt{s} (Specified add serv)\n" if(defined($g_opt{s}));
 	print "-t = $g_opt{t} (Specified rm serv)\n" if(defined($g_opt{t}));
 	print "-w = $g_opt{w} (Specified rewind cache)\n" if(defined($g_opt{w}));
-	print "-x = $g_opt{x} (Specified no new headers)\n" if(defined($g_opt{x}));
+	print "-x = $g_opt{x} (Specified expire)\n" if(defined($g_opt{x}));
 	print "-y = $g_opt{y} (Specified yEnc)\n" if(defined($g_opt{y}));
 }
 
@@ -133,7 +136,6 @@ sub connect_db_handle {
 	if (!$g_db_h) {
 		return 0;
 	}
-	#$g_db_h->do("VACUUM;");
 	$g_db_h->do("PRAGMA default_synchronous = OFF;");
 
 	my $found_headers = 0;
@@ -150,8 +152,21 @@ sub connect_db_handle {
 		$g_db_h->do("CREATE TABLE newsman_headers (hostname TEXT NOT NULL, newsgroup TEXT NOT NULL, numb INT, subj TEXT NOT NULL, frm TEXT NOT NULL, date TEXT NOT NULL, mesg TEXT NOT NULL, refr TEXT NOT NULL, char TEXT NOT NULL, line TEXT NOT NULL, xref TEXT NOT NULL);");
 	}
 
+	my $found_hosts_conf = 0;
+	my $hosts_conf_q_handle = $g_db_h->prepare("SELECT * FROM sqlite_master WHERE type='table' and name='newsman_hosts';"); #SQLITE specific command
+	if ($hosts_conf_q_handle) {
+		$hosts_conf_q_handle->execute();
+		while (my $config_row = $hosts_conf_q_handle->fetchrow_hashref()) {
+			$found_hosts_conf++;
+		}
+	}
+	if ($found_hosts_conf <= 0) {
+		lprint "Creating hosts conf table...";
+		$g_db_h->do("CREATE TABLE newsman_hosts (hostname TEXT NOT NULL, port INT, username TEXT NOT NULL, password TEXT NOT NULL);");
+	}
+
 	my $found_config = 0;
-	my $config_q_handle = $g_db_h->prepare("SELECT * FROM sqlite_master WHERE type='table' and name='newsman_hosts';"); #SQLITE specific command
+	my $config_q_handle = $g_db_h->prepare("SELECT * FROM sqlite_master WHERE type='table' and name='newsman_config';"); #SQLITE specific command
 	if ($config_q_handle) {
 		$config_q_handle->execute();
 		while (my $config_row = $config_q_handle->fetchrow_hashref()) {
@@ -160,8 +175,27 @@ sub connect_db_handle {
 	}
 	if ($found_config <= 0) {
 		lprint "Creating config table...";
-		$g_db_h->do("CREATE TABLE newsman_hosts (hostname TEXT NOT NULL, port INT, username TEXT NOT NULL, password TEXT NOT NULL);");
+		$g_db_h->do("CREATE TABLE newsman_config (key TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(key));");
+		$g_db_h->do("INSERT INTO newsman_config (key, value) VALUES ('db_version', '$g_current_db_conf_version');");
 	}
+
+	my $conf_version = 0;
+	$config_q_handle = $g_db_h->prepare("SELECT * FROM newsman_config;");
+	if ($config_q_handle) {
+		$config_q_handle->execute();
+		while (my $config_row = $config_q_handle->fetchrow_hashref()) {
+			if ($config_row->{'key'} eq 'db_version') {
+				$conf_version = $config_row->{'value'};
+			}
+		}
+	}
+	lprint("Found database version: " . $conf_version);
+	if ($conf_version < $g_current_db_conf_version) {
+		# do the database conversion function here if needed
+		lprint("Unsupported database version: " . $conf_version);
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -249,9 +283,25 @@ sub refresh_headers {
 	if (defined($g_opt{p})) {
 		lprint "purging db cache for newsgroup $g_opt{g}";
 		$g_db_h->do("DELETE FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+		$g_db_h->do("VACUUM;");
 	}
 
 	foreach my $n_h (@g_news_h) {
+
+		# see what we already have
+		my $dbmax = $g_db_h->selectrow_hashref("SELECT MAX(numb) as max FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+		my $dbmin = $g_db_h->selectrow_hashref("SELECT MIN(numb) as min FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+
+		# print out what we currently have
+		if (defined($dbmin->{'min'}) && defined($dbmax->{'max'})) {
+			my $dbdatemax = $g_db_h->selectrow_hashref("SELECT datetime(date, 'unixepoch', 'localtime') as date FROM newsman_headers WHERE newsgroup = '$g_opt{g}' AND numb == $dbmax->{'max'};"); #call is probably specific to sqlite with datetime
+			my $dbdatemin = $g_db_h->selectrow_hashref("SELECT datetime(date, 'unixepoch', 'localtime') as date FROM newsman_headers WHERE newsgroup = '$g_opt{g}' AND numb == $dbmin->{'min'};");
+			if (defined($dbdatemin->{'date'}) && defined($dbdatemax->{'date'})) {
+				lprint "DB cached from $dbmin->{'min'} ($dbdatemin->{'date'}) to $dbmax->{'max'} ($dbdatemax->{'date'}): " . ($dbmax->{'max'} - $dbmin->{'min'}) . " articles.";
+			} else {
+				lprint "DB cached from $dbmin->{'min'} to $dbmax->{'max'} (" . ($dbmax->{'max'} - $dbmin->{'min'}) . ").";
+			}
+		}
 
 #TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
@@ -272,23 +322,19 @@ sub refresh_headers {
 		my $dofirst = $groupfirst;
 		my $dolast = $grouplast;
 
-		# see what we already have
-		my $dbmax = $g_db_h->selectrow_hashref("SELECT MAX(numb) as max FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
+		# only start at where we left off
 		if (defined($dbmax->{'max'})) {
 			if ($dofirst < $dbmax->{'max'}) {
 				$dofirst = $dbmax->{'max'} + 1;
-				lprint "DB cached to $dbmax->{'max'}.";
 			}
 		}
 
 		# get a few more that we dont have yet previous to our db start
 		if (defined($g_opt{w})) {
-			my $dbmin = $g_db_h->selectrow_hashref("SELECT MIN(numb) as min FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
 			if (defined($dbmin->{'min'})) {
 				if ($dofirst > $dbmin->{'min'}) {
-					$dofirst = $dbmin->{'min'} - $g_opt{w};
+					$dofirst = $dbmin->{'min'} - $g_opt{w} + 1;
 					$dolast = $dbmin->{'min'};
-					lprint "DB cache starts at $dbmin->{'min'}.";
 				}
 			}
 		}
@@ -312,7 +358,13 @@ sub refresh_headers {
 				my $set_size = $g_opt{b};
 			}
 
-			lprint "Will be getting $num_to_do headers in batch sizes of $set_size.";
+#TODO reconnect function
+			# get the dates of the first and last post
+			my @firstdate = $n_h->xover($dofirst);
+			my @firstfields = split /\t/, $firstdate[0];
+			my @lastdate = $n_h->xover($dolast);
+			my @lastfields = split /\t/, $lastdate[0];
+			lprint "Will be getting $num_to_do headers in batch sizes of $set_size\n\tfrom $dofirst ($firstfields[3]) to $dolast ($lastfields[3]).";
 
 			my $max_set = int($num_to_do / $set_size);
 			if ($max_set != $num_to_do / $set_size) {
@@ -338,6 +390,7 @@ sub refresh_headers {
 					lprint "Trying to reconnect...";
 					reconnect_news_handles();
 					@xoverrsp = $n_h->xover($setfirst, $setlast);
+#TODO try again
 				}
 				if (!@xoverrsp) {
 					lprint "No response, Timed out? Try lower batch size";
@@ -360,6 +413,11 @@ sub refresh_headers {
 				if ($ins_q_handle) {
 					foreach my $xover (@xoverrsp) {
 						my @fields = split /\t/, $xover;
+
+						# make the post timestamp in unix time instead of RFC 1036->RFC 2822 (getdate)
+						my $datetime = DateTime::Format::Mail->parse_datetime($fields[3]);
+						$fields[3] = $datetime->epoch;
+
 						#TODO hostname etc
 						$ins_q_handle->execute(@fields);
 					}
@@ -565,7 +623,7 @@ sub get_articles {
 		}
 
 		# TODO max batch
-		my $art_q_handle = $g_db_h->prepare("SELECT numb,subj FROM newsman_headers WHERE newsgroup = '$g_opt{g}';"); #SQLITE specific command
+		my $art_q_handle = $g_db_h->prepare("SELECT numb,date,subj FROM newsman_headers WHERE newsgroup = '$g_opt{g}';"); #SQLITE specific command
 		if ($art_q_handle) {
 			$art_q_handle->execute();
 
@@ -575,7 +633,7 @@ sub get_articles {
 					if ($art_row->{'subj'} !~ m/$g_opt{r}/) {
 						next;
 					}
-					lprint "$art_row->{'numb'}: $art_row->{'subj'}";
+					lprint "$art_row->{'numb'} ($art_row->{'date'}): $art_row->{'subj'}";
 				}
 				if (defined($g_opt{d})) {
 					download_article($n_h, $art_row->{'numb'}, $art_row->{'subj'});
@@ -631,7 +689,7 @@ if (defined($g_opt{a})) {
 
 # if we passed in a group, grab the headers
 if (defined($g_opt{g})) {
-	if (!defined($g_opt{x})) {
+	if (!defined($g_opt{j})) {
 		refresh_headers();
 	}
 	get_articles();
