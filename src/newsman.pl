@@ -3,7 +3,7 @@
 #
 # NewsMan NNTP news tool
 #
-# REQUIRES: News::NNTPClient and DBD::SQLite DateTime::Format::Mail
+# REQUIRES: News::NNTPClient, DBD::SQLite and DateTime::Format::Mail
 # (sudo apt-get install libnews-nntpclient-perl libdbd-sqlite3-perl libdatetime-format-mail-perl)
 # (recommended sudo apt-get install sqlite3)
 #
@@ -168,7 +168,7 @@ sub connect_db_handle {
 	}
 	if ($found_hosts_conf <= 0) {
 		lprint "Creating hosts conf table...";
-		$g_db_h->do("CREATE TABLE newsman_hosts (hostname TEXT NOT NULL, port INT, username TEXT NOT NULL, password TEXT NOT NULL);");
+		$g_db_h->do("CREATE TABLE newsman_hosts (hostname TEXT NOT NULL, port INT, username TEXT NOT NULL, password TEXT NOT NULL, max_conn INT);");
 	}
 
 	my $found_config = 0;
@@ -378,9 +378,11 @@ sub refresh_headers {
 			# get the dates of the first and last post
 			my @firstdate = $n_h->xover($dofirst);
 			my @firstfields = split /\t/, $firstdate[0];
+			my $firstdatetime = DateTime::Format::Mail->parse_datetime($firstfields[3]);
 			my @lastdate = $n_h->xover($dolast);
 			my @lastfields = split /\t/, $lastdate[0];
-			lprint "Will be getting $num_to_do headers in batch sizes of $set_size\n\tfrom $dofirst ($firstfields[3]) to $dolast ($lastfields[3]).";
+			my $lastdatetime = DateTime::Format::Mail->parse_datetime($lastfields[3]);
+			lprint "Will be getting $num_to_do headers in batch sizes of $set_size\n\tfrom $dofirst (" . $firstdatetime->ymd() . " " . $firstdatetime->hms() . ") to $dolast (" . $lastdatetime->ymd() . " " . $lastdatetime->hms() . ").";
 
 			my $max_set = int($num_to_do / $set_size);
 			if ($max_set != $num_to_do / $set_size) {
@@ -680,7 +682,7 @@ if (defined($g_opt{s})) {
 	my ($up, $hp) = split('@', $g_opt{s});
 	my ($user, $pass) = split(':', $up);
 	my ($host, $port) = split(':', $hp);
-	$g_db_h->do("INSERT INTO newsman_hosts (hostname, port, username, password) VALUES ('$host', $port, '$user', '$pass');");
+	$g_db_h->do("INSERT INTO newsman_hosts (hostname, port, username, password, max_conn) VALUES ('$host', $port, '$user', '$pass', 1);");
 }
 
 if (defined($g_opt{t})) {
