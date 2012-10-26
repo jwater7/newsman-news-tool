@@ -37,7 +37,7 @@ my $g_dbfile = $ENV{'HOME'} . '/.newsmandb';
 my $g_current_db_conf_version = 1;
 my $g_max_num_to_do = 10000000;
 my $g_db_h;
-my @g_news_h = ();
+my @g_news_list = ();
 my %g_opt = ();
 my $baseprg = $0;
 $baseprg =~ s{.*[/\\]}{};
@@ -205,11 +205,58 @@ sub connect_db_handle {
 	return 1;
 }
 
+sub connect_news_handles {
+
+	# see if we need to initialize the news_list aka it is empty
+	if (!scalar(@g_news_list)) {
+
+		# get a list of hosts
+		my $host_q_handle = $g_db_h->prepare("SELECT * FROM newsman_hosts;");
+		if ($host_q_handle) {
+			$host_q_handle->execute();
+
+			# For each host create an NNTP handle
+			while (my $host_row = $host_q_handle->fetchrow_hashref()) {
+
+				push(@g_news_list, { 'hostname' => $host_row->{'hostname'},
+					'port' => $host_row->{'port'},
+					'username' => $host_row->{'username'},
+					'password' => $host_row->{'password'}
+					});
+			}
+		}
+	}
+
+	# connect to all the servers
+	my $added_hosts = 0;
+	foreach my $news_item (@g_news_list) {
+
+		# Create a news handle
+		my $n_h = new News::NNTPClient($news_item->{'hostname'}, $news_item->{'port'});
+		if (!$n_h || !$n_h->ok) {
+			lprint "Error creating news handle";
+			$news_item->{'handle'} = undef;
+			next;
+		}
+
+		# Auth if needed
+		if ($news_item->{'username'} ne '' && $news_item->{'password'} ne '') {
+			$n_h->authinfo($news_item->{'username'}, $news_item->{'password'});
+		}
+
+		$news_item->{'handle'} = $n_h;
+		$added_hosts++;
+	}
+
+	return $added_hosts;
+}
+
 sub close_news_handles {
 
-	while (scalar(@g_news_h)) {
-		my $n_h = pop(@g_news_h);
+	foreach my $news_item (@g_news_list) {
+		my $n_h = $news_item->{'handle'};
 		$n_h->quit();
+		$news_item->{'handle'} = undef;
 	}
 
 }
@@ -237,44 +284,17 @@ sub list_config {
 	}
 }
 
-sub connect_news_handles {
-
-	my $added_hosts = 0;
-
-	# get a list of hosts
-	my $host_q_handle = $g_db_h->prepare("SELECT * FROM newsman_hosts;");
-	if ($host_q_handle) {
-		$host_q_handle->execute();
-
-		# For each host create an NNTP handle
-		while (my $host_row = $host_q_handle->fetchrow_hashref()) {
-
-			# Create a news handle
-			my $n_h = new News::NNTPClient($host_row->{'hostname'}, $host_row->{'port'});
-			if (!$n_h) {
-				lprint "Error";
-				next;
-			}
-
-			# Auth if needed
-			if ($host_row->{'username'} ne '' && $host_row->{'password'} ne '') {
-				$n_h->authinfo($host_row->{'username'}, $host_row->{'password'});
-			}
-
-			push(@g_news_h, $n_h);
-			$added_hosts++;
-		}
-	}
-	return $added_hosts;
-}
-
 sub list_groups {
 
-	foreach my $n_h (@g_news_h) {
+	foreach my $news_item (@g_news_list) {
+		my $n_h = $news_item->{'handle'};
 		my @groups;
 		if (defined($g_opt{r})) {
 			lprint "Getting list for '$g_opt{r}'...";
 			@groups = $n_h->list('active', $g_opt{r});
+			if (!scalar(@groups)) {
+				lprint "Did not find any groups for pattern, server may not accept regex, try just * for wildcards.";
+			}
 		} else {
 			# just do them all
 			lprint "Getting whole list...";
@@ -286,7 +306,8 @@ sub list_groups {
 
 sub refresh_headers {
 
-	foreach my $n_h (@g_news_h) {
+	foreach my $news_item (@g_news_list) {
+		my $n_h = $news_item->{'handle'};
 
 		# see what we already have
 		my $dbmax = $g_db_h->selectrow_hashref("SELECT MAX(numb) as max FROM newsman_headers WHERE newsgroup = '$g_opt{g}';");
@@ -303,11 +324,11 @@ sub refresh_headers {
 			}
 		}
 
-#TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		if (!$groupfirst) {
 			lprint "Trying to reconnect...";
 			reconnect_news_handles();
+			$n_h = $news_item->{'handle'};
 			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		}
 		if (!$groupfirst) {
@@ -402,25 +423,27 @@ sub refresh_headers {
 			
 				my $perc = int((($set) / $max_set) * 100);
 				lprint "Caching headers $setfirst to $setlast... $perc% (" . ($set + 1) . "/" . $max_set . ")";
-#TODO reconnect function
+
 				my @xoverrsp = $n_h->xover($setfirst, $setlast);
 				if (!@xoverrsp) {
 					lprint "Trying to reconnect...";
 					reconnect_news_handles();
+					$n_h = $news_item->{'handle'};
 					@xoverrsp = $n_h->xover($setfirst, $setlast);
-#TODO try again
 				}
 				if (!@xoverrsp) {
 					lprint "No response, Timed out? Try lower batch size";
 					return;
 				}
+
 				$g_db_h->begin_work;
 				#TODO hostname doesnt match with this method
-#TODO reconnect function
+
 				my $nhost = $n_h->host();
 				if (!$nhost) {
 					lprint "Trying to reconnect...";
 					reconnect_news_handles();
+					$n_h = $news_item->{'handle'};
 					$nhost = $n_h->host();
 				}
 				if (!$nhost) {
@@ -584,7 +607,9 @@ sub ydecode {
 
 sub download_article {
 
-	my ($n_h, $numb, $subj) = @_;
+	my ($news_item, $numb, $subj) = @_;
+
+	my $n_h = $news_item->{'handle'};
 
 	if (!defined($g_opt{d})) {
 		# we are not downloading to a folder
@@ -598,11 +623,11 @@ sub download_article {
 		if(open(my $fh, '>', $newf)) {
 			lprint "Saving article $newf ($subj)...";
 
-#TODO reconnect function
 			my $art_text = $n_h->article($numb);
 			if (!$art_text) {
 				lprint "Trying to reconnect...";
 				reconnect_news_handles();
+				$n_h = $news_item->{'handle'};
 				$art_text = $n_h->article($numb);
 			}
 			if (!$art_text) {
@@ -621,13 +646,14 @@ sub download_article {
 
 sub get_articles {
 
-	foreach my $n_h (@g_news_h) {
+	foreach my $news_item (@g_news_list) {
+		my $n_h = $news_item->{'handle'};
 
-#TODO reconnect function
 		my ($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		if (!$groupfirst) {
 			lprint "Trying to reconnect...";
 			reconnect_news_handles();
+			$n_h = $news_item->{'handle'};
 			($groupfirst, $grouplast) = $n_h->group($g_opt{g});
 		}
 		if (!$groupfirst) {
@@ -636,7 +662,7 @@ sub get_articles {
 		}
 
 		if (defined($g_opt{e})) {
-			download_article($n_h, $g_opt{e}, "user defined article " . $g_opt{e});
+			download_article($news_item, $g_opt{e}, "user defined article " . $g_opt{e});
 			next;
 		}
 
@@ -654,7 +680,7 @@ sub get_articles {
 					lprint "$art_row->{'numb'} ($art_row->{'date'}): $art_row->{'subj'}";
 				}
 				if (defined($g_opt{d})) {
-					download_article($n_h, $art_row->{'numb'}, $art_row->{'subj'});
+					download_article($news_item, $art_row->{'numb'}, $art_row->{'subj'});
 				} else {
 					#print $n_h->article($art_row->{'numb'});
 				}
@@ -673,10 +699,6 @@ if (!$success) {
 	exit 1;
 }
 
-if (defined($g_opt{l})) {
-	list_config();
-}
-
 if (defined($g_opt{s})) {
 	#TODO if username or password has @ or :
 	my ($up, $hp) = split('@', $g_opt{s});
@@ -691,6 +713,10 @@ if (defined($g_opt{t})) {
 	my ($user, $pass) = split(':', $up);
 	my ($host, $port) = split(':', $hp);
 	$g_db_h->do("DELETE FROM newsman_hosts WHERE hostname = '$host' AND port = $port AND username = '$user' AND password = '$pass';");
+}
+
+if (defined($g_opt{l})) {
+	list_config();
 }
 
 my $num_handles = connect_news_handles();
