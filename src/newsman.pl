@@ -195,7 +195,7 @@ sub connect_db_handle {
 			}
 		}
 	}
-	lprint("Found database version: " . $conf_version);
+
 	if ($conf_version < $g_current_db_conf_version) {
 		# do the database conversion function here if needed
 		lprint("Unsupported database version: " . $conf_version);
@@ -400,9 +400,11 @@ sub refresh_headers {
 			my @firstdate = $n_h->xover($dofirst);
 			my @firstfields = split /\t/, $firstdate[0];
 			my $firstdatetime = DateTime::Format::Mail->parse_datetime($firstfields[3]);
+			$firstdatetime->set_time_zone('America/Los_Angeles');
 			my @lastdate = $n_h->xover($dolast);
 			my @lastfields = split /\t/, $lastdate[0];
 			my $lastdatetime = DateTime::Format::Mail->parse_datetime($lastfields[3]);
+			$lastdatetime->set_time_zone('America/Los_Angeles');
 			lprint "Will be getting $num_to_do headers in batch sizes of $set_size\n\tfrom $dofirst (" . $firstdatetime->ymd() . " " . $firstdatetime->hms() . ") to $dolast (" . $lastdatetime->ymd() . " " . $lastdatetime->hms() . ").";
 
 			my $max_set = int($num_to_do / $set_size);
