@@ -1,7 +1,7 @@
 Package: newsman
 Architecture: all
 Maintainer: mail@waterbrook.net
-Depends: libnews-nntpclient-perl, libdbd-sqlite3-perl
+Depends: libnews-nntpclient-perl, libdbd-sqlite3-perl, libdatetime-format-mail-perl
 Priority: optional
 Description: Newsman NNTP news tool
  Newsman is a simple NNTP perl tool that can:
