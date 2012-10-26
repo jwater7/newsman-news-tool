@@ -437,20 +437,7 @@ sub refresh_headers {
 				}
 
 				$g_db_h->begin_work;
-				#TODO hostname doesnt match with this method
-
-				my $nhost = $n_h->host();
-				if (!$nhost) {
-					lprint "Trying to reconnect...";
-					reconnect_news_handles();
-					$n_h = $news_item->{'handle'};
-					$nhost = $n_h->host();
-				}
-				if (!$nhost) {
-					lprint "No host call response, Timed out? Try lower batch size";
-					return;
-				}
-				my $ins_q_handle = $g_db_h->prepare("INSERT INTO newsman_headers (hostname, newsgroup, numb, subj, frm, date, mesg, refr, char, line, xref) VALUES ('" . $nhost . "', '$g_opt{g}', ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+				my $ins_q_handle = $g_db_h->prepare("INSERT INTO newsman_headers (hostname, newsgroup, numb, subj, frm, date, mesg, refr, char, line, xref) VALUES ('" . $news_item->{'hostname'} . "', '$g_opt{g}', ?, ?, ?, ?, ?, ?, ?, ?, ?);");
 				if ($ins_q_handle) {
 					foreach my $xover (@xoverrsp) {
 						my @fields = split /\t/, $xover;
@@ -459,7 +446,6 @@ sub refresh_headers {
 						my $datetime = DateTime::Format::Mail->parse_datetime($fields[3]);
 						$fields[3] = $datetime->epoch;
 
-						#TODO hostname etc
 						$ins_q_handle->execute(@fields);
 					}
 				}
@@ -475,6 +461,7 @@ sub ydecode {
 
 	my ($newf) = @_;
 
+	#TODO fix this as it is appending to the end of complete files
 	#open up the file for reading
 	my $fh;
 	if (!open($fh, '<', $newf)) {
@@ -701,6 +688,7 @@ if (!$success) {
 
 if (defined($g_opt{s})) {
 	#TODO if username or password has @ or :
+	#TODO workaround insert duplicates for more than one connection
 	my ($up, $hp) = split('@', $g_opt{s});
 	my ($user, $pass) = split(':', $up);
 	my ($host, $port) = split(':', $hp);
