@@ -656,7 +656,7 @@ sub get_articles {
 		}
 
 		# TODO max batch
-		my $art_q_handle = $g_db_h->prepare("SELECT numb,date,subj FROM newsman_headers WHERE newsgroup = '$g_opt{g}';"); #SQLITE specific command
+		my $art_q_handle = $g_db_h->prepare("SELECT numb, datetime(date, 'unixepoch', 'localtime') as date, subj FROM newsman_headers WHERE newsgroup = '$g_opt{g}';"); #SQLITE specific command
 		if ($art_q_handle) {
 			$art_q_handle->execute();
 
