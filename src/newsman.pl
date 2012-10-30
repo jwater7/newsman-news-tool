@@ -680,6 +680,8 @@ sub get_articles {
 
 ######### MAIN
 
+$|=1; # Flush output after each print
+
 init_opt();
 
 my $success = connect_db_handle();
