@@ -431,6 +431,7 @@ sub refresh_headers {
 					lprint "Trying to reconnect...";
 					reconnect_news_handles();
 					$n_h = $news_item->{'handle'};
+					$n_h->group($g_opt{g});
 					@xoverrsp = $n_h->xover($setfirst, $setlast);
 				}
 				if (!@xoverrsp) {
